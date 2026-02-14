@@ -33,7 +33,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
-function Ensure-LogPath {
+function New-LogPath {
     param([string]$Path)
     $dir = Split-Path -Path $Path -Parent
     if (-not (Test-Path $dir)) {
@@ -46,7 +46,7 @@ function Write-Log {
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$timestamp] $Message"
     Add-Content -Path $LogPath -Value $line -Encoding utf8
-    Write-Host $line
+    Write-Output $line
 }
 
 function Get-FileEncoding {
@@ -85,9 +85,9 @@ function Find-ProtonForwardedPort {
     foreach ($log in $logs) {
         $tail = Get-Content -Path $log.FullName -Tail $TailLines -ErrorAction Stop
         $text = $tail -join "`n"
-        $matches = [regex]::Matches($text, "Port pair (\\d+)->")
-        if ($matches.Count -gt 0) {
-            $port = $matches[$matches.Count - 1].Groups[1].Value
+        $portMatches = [regex]::Matches($text, "Port pair (\\d+)->")
+        if ($portMatches.Count -gt 0) {
+            $port = $portMatches[$portMatches.Count - 1].Groups[1].Value
             return [int]$port
         }
     }
@@ -96,6 +96,7 @@ function Find-ProtonForwardedPort {
 }
 
 function Update-QbitConfig {
+    [CmdletBinding(SupportsShouldProcess)]
     param([string]$ConfigPath, [int]$Port)
     # Atualiza Session\Port mantendo encoding e quebra de linha do arquivo.
 
@@ -129,7 +130,8 @@ function Update-QbitConfig {
     $updatedText = $text
     if ($match.Success) {
         $updatedText = [regex]::Replace($text, $portPattern, "Session\\Port=$Port")
-    } else {
+    }
+    else {
         $updatedText = $text.TrimEnd() + $newLine + "Session\\Port=$Port" + $newLine
     }
 
@@ -184,6 +186,7 @@ function Find-QbitExe {
 }
 
 function Restart-Qbit {
+    [CmdletBinding(SupportsShouldProcess)]
     param([string]$ExePath)
     # Encerra e reinicia o qBittorrent para aplicar a nova porta.
 
@@ -193,7 +196,8 @@ function Restart-Qbit {
             Write-Log "Stopping qBittorrent..."
             $running | Stop-Process -Force
             Start-Sleep -Seconds 2
-        } else {
+        }
+        else {
             Write-Log "qBittorrent was not running."
         }
 
@@ -206,7 +210,7 @@ function Restart-Qbit {
     }
 }
 
-Ensure-LogPath -Path $LogPath
+New-LogPath -Path $LogPath
 Write-Log "=== Start ==="
 Write-Log "User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 Write-Log "Proton log dir: $ProtonVpnLogDir"
@@ -224,7 +228,8 @@ try {
     $result = Update-QbitConfig -ConfigPath $QbitConfigPath -Port $newPort
     if ($result.Changed) {
         Write-Log "Port updated: $($result.OldPort) -> $($result.NewPort)"
-    } else {
+    }
+    else {
         Write-Log "Port already set to $($result.NewPort)"
     }
 
@@ -232,12 +237,14 @@ try {
         $exe = Find-QbitExe -OverridePath $QbitExePath
         Write-Log "Restarting qBittorrent..."
         Restart-Qbit -ExePath $exe
-    } else {
+    }
+    else {
         Write-Log "Skipping restart because port did not change."
     }
 
     Write-Log "=== Done ==="
-} catch {
+}
+catch {
     Write-Log "ERROR: $($_.Exception.Message)"
     Write-Log "StackTrace: $($_.Exception.StackTrace)"
     Write-Log "=== Failed ==="
