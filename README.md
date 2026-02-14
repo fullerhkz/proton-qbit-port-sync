@@ -5,7 +5,9 @@ Sincroniza a porta encaminhada do Proton VPN com o qBittorrent no Windows. O scr
 2. Atualiza `Session\Port` no `qBittorrent.ini`
 3. Reinicia o qBittorrent para aplicar a nova porta
 
-Este repositorio contem um unico script PowerShell: `proton-qbit-port-sync.ps1`.
+Este repositorio contem:
+- `proton-qbit-port-sync.ps1` (script principal)
+- `proton-qbit-port-sync.bat` (atalho para execucao com duplo clique)
 
 ## Requisitos
 
@@ -18,7 +20,7 @@ Este repositorio contem um unico script PowerShell: `proton-qbit-port-sync.ps1`.
 
 1. Crie uma pasta para o script, por exemplo:
    - `C:\Scripts\proton-qbit-port-sync`
-2. Coloque `proton-qbit-port-sync.ps1` dentro dessa pasta.
+2. Coloque `proton-qbit-port-sync.ps1` e `proton-qbit-port-sync.bat` dentro dessa pasta.
 3. (Opcional) Crie o diretorio de logs (o script cria automaticamente):
    - `%ProgramData%\ProtonQbitPortSync`
 
@@ -28,6 +30,19 @@ Execute manualmente para validar:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1"
+```
+
+### Atalho .bat (duplo clique)
+
+Para facilitar a execucao, use o arquivo `.bat`. Ele:
+- chama o PowerShell com `-ExecutionPolicy Bypass`
+- aponta para o `proton-qbit-port-sync.ps1` no mesmo diretorio
+- repassa quaisquer argumentos para o script
+
+Exemplo:
+
+```
+C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.bat -SkipRestartIfSame
 ```
 
 ### Parametros opcionais
@@ -84,6 +99,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-
      ```
      -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1"
      ```
+
+Opcional: em vez do PowerShell, voce pode chamar o `.bat` direto:
+
+```
+Programa/script: C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.bat
+```
 5. Aba **Configuracoes**:
    - Permitir que a tarefa seja executada sob demanda
    - Interromper a tarefa se estiver em execucao por mais de 10 minutos
