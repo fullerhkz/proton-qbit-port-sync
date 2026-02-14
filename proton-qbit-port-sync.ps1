@@ -33,7 +33,7 @@ param(
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
-function Ensure-LogPath {
+function New-LogPath {
     param([string]$Path)
     $dir = Split-Path -Path $Path -Parent
     if (-not (Test-Path $dir)) {
@@ -96,7 +96,7 @@ function Find-ProtonForwardedPort {
 }
 
 function Update-QbitConfig {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param([string]$ConfigPath, [int]$Port)
     # Atualiza Session\Port mantendo encoding e quebra de linha do arquivo.
 
@@ -186,7 +186,7 @@ function Find-QbitExe {
 }
 
 function Restart-Qbit {
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess)]
     param([string]$ExePath)
     # Encerra e reinicia o qBittorrent para aplicar a nova porta.
 
@@ -210,7 +210,7 @@ function Restart-Qbit {
     }
 }
 
-Ensure-LogPath -Path $LogPath
+New-LogPath -Path $LogPath
 Write-Log "=== Start ==="
 Write-Log "User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 Write-Log "Proton log dir: $ProtonVpnLogDir"
