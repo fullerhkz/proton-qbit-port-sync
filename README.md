@@ -1,53 +1,53 @@
 # proton-qbit-port-sync
 
-Sync the Proton VPN forwarded port into qBittorrent on Windows. The script:
-1. Reads the forwarded port from Proton VPN logs
-2. Updates `Session\Port` in `qBittorrent.ini`
-3. Restarts qBittorrent so the new port is applied
+Sincroniza a porta encaminhada do Proton VPN com o qBittorrent no Windows. O script:
+1. Le a porta encaminhada nos logs do Proton VPN
+2. Atualiza `Session\Port` no `qBittorrent.ini`
+3. Reinicia o qBittorrent para aplicar a nova porta
 
-This repository contains a single PowerShell script: `proton-qbit-port-sync.ps1`.
+Este repositorio contem um unico script PowerShell: `proton-qbit-port-sync.ps1`.
 
-## Requirements
+## Requisitos
 
 - Windows 10/11
-- Proton VPN (with Port Forwarding enabled)
-- qBittorrent installed
-- PowerShell 5.1+ (built-in on Windows)
+- Proton VPN com Port Forwarding habilitado
+- qBittorrent instalado
+- PowerShell 5.1+ (ja incluso no Windows)
 
-## Install
+## Instalacao
 
-1. Create a folder for the script, for example:
+1. Crie uma pasta para o script, por exemplo:
    - `C:\Scripts\proton-qbit-port-sync`
-2. Place `proton-qbit-port-sync.ps1` inside that folder.
-3. (Optional) Create a log directory (the script will auto-create it):
+2. Coloque `proton-qbit-port-sync.ps1` dentro dessa pasta.
+3. (Opcional) Crie o diretorio de logs (o script cria automaticamente):
    - `%ProgramData%\ProtonQbitPortSync`
 
-## Usage
+## Uso
 
-Run manually to validate:
+Execute manualmente para validar:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1"
 ```
 
-### Optional parameters
+### Parametros opcionais
 
-- `-ProtonVpnLogDir`  
-  Default: `%LOCALAPPDATA%\Proton\Proton VPN\Logs`
-- `-QbitConfigPath`  
-  Default: `%APPDATA%\qBittorrent\qBittorrent.ini`
-- `-QbitExePath`  
-  Default: auto-detect (Program Files, PATH, registry)
-- `-LogPath`  
-  Default: `%ProgramData%\ProtonQbitPortSync\proton-qbit-port-sync.log`
-- `-LogTailLines`  
-  Default: `2000`
-- `-SkipRestartIfSame`  
-  Skip restart if the port did not change
-- `-WhatIf`  
-  Dry-run (no file writes, no restart)
+- `-ProtonVpnLogDir`
+  Padrao: `%LOCALAPPDATA%\Proton\Proton VPN\Logs`
+- `-QbitConfigPath`
+  Padrao: `%APPDATA%\qBittorrent\qBittorrent.ini`
+- `-QbitExePath`
+  Padrao: auto-detect (Program Files, PATH, registry)
+- `-LogPath`
+  Padrao: `%ProgramData%\ProtonQbitPortSync\proton-qbit-port-sync.log`
+- `-LogTailLines`
+  Padrao: `2000`
+- `-SkipRestartIfSame`
+  Nao reinicia se a porta nao mudou
+- `-WhatIf`
+  Simulacao (nao escreve arquivo, nao reinicia)
 
-Example with explicit paths:
+Exemplo com caminhos explicitos:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1" `
@@ -55,61 +55,60 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-
   -LogPath "C:\Logs\proton-qbit-port-sync.log"
 ```
 
-## Task Scheduler setup (Windows)
+## Agendador de Tarefas (Windows)
 
-### Option A: Import the XML template
+### Opcao A: importar o XML
 
-1. Open Task Scheduler.
-2. In the right panel, click **Import Task...**
-3. Select `task-scheduler-example.xml` from this repo.
-4. Edit the task:
-   - **Actions** tab: update the script path in Arguments.
-   - **General** tab: set your user and enable **Run with highest privileges**.
-5. Save.
+1. Abra o Agendador de Tarefas.
+2. No painel da direita, clique em **Importar Tarefa...**
+3. Selecione `task-scheduler-example.xml` deste repositorio.
+4. Edite a tarefa:
+   - Aba **Acoes**: atualize o caminho do script em Arguments.
+   - Aba **Geral**: defina seu usuario e marque **Executar com privilegios mais altos**.
+5. Salve.
 
-### Option B: Create manually
+### Opcao B: criar manualmente
 
-1. Open Task Scheduler and click **Create Task...**
-2. **General** tab:
-   - Name: `Proton qBittorrent Port Sync`
-   - Run whether user is logged on or not
-   - Run with highest privileges
-3. **Triggers** tab:
-   - New... -> Begin the task: **At log on**
-   - (Optional) Delay: **3 minutes**
-4. **Actions** tab:
-   - New... -> Action: **Start a program**
-   - Program/script: `powershell.exe`
-   - Add arguments:
+1. Abra o Agendador de Tarefas e clique em **Criar Tarefa...**
+2. Aba **Geral**:
+   - Nome: `Proton qBittorrent Port Sync`
+   - Executar esteja o usuario conectado ou nao
+   - Executar com privilegios mais altos
+3. Aba **Disparadores**:
+   - Novo... -> Iniciar a tarefa: **Ao fazer logon**
+   - (Opcional) Atraso: **3 minutos**
+4. Aba **Acoes**:
+   - Novo... -> Acao: **Iniciar um programa**
+   - Programa/script: `powershell.exe`
+   - Adicionar argumentos:
      ```
      -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1"
      ```
-5. **Settings** tab:
-   - Allow task to be run on demand
-   - Stop the task if it runs longer than 10 minutes
+5. Aba **Configuracoes**:
+   - Permitir que a tarefa seja executada sob demanda
+   - Interromper a tarefa se estiver em execucao por mais de 10 minutos
 
-### Validate
+### Validar
 
-Run the task manually once and check the log:
+Execute a tarefa manualmente uma vez e confira o log:
 
 ```
 %ProgramData%\ProtonQbitPortSync\proton-qbit-port-sync.log
 ```
 
-## Troubleshooting
+## Solucao de problemas
 
-- **No 'Port pair' line found**
-  - Verify Proton VPN is connected with Port Forwarding enabled.
-  - Check `%LOCALAPPDATA%\Proton\Proton VPN\Logs`.
-- **qBittorrent does not restart**
-  - Provide `-QbitExePath` explicitly.
-- **Config not updated**
-  - Verify `%APPDATA%\qBittorrent\qBittorrent.ini` exists and is accessible.
+- **Nao encontrou linha 'Port pair'**
+  - Verifique se o Proton VPN esta conectado com Port Forwarding habilitado.
+  - Confira `%LOCALAPPDATA%\Proton\Proton VPN\Logs`.
+- **qBittorrent nao reinicia**
+  - Passe `-QbitExePath` explicitamente.
+- **Configuracao nao atualizada**
+  - Verifique se `%APPDATA%\qBittorrent\qBittorrent.ini` existe e se ha permissao.
 
 ## Placeholders
 
-Any user-specific paths or identifiers must be replaced with your own values:
+Substitua os caminhos abaixo pelos seus valores reais:
 
 - `C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1`
 - `%LOCALAPPDATA%` / `%APPDATA%` / `%ProgramData%`
-

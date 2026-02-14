@@ -1,8 +1,23 @@
 <#
-  Proton VPN -> qBittorrent port sync (Windows)
-  - Reads the forwarded port from Proton VPN logs
-  - Updates qBittorrent config (Session\Port)
-  - Restarts qBittorrent to apply the new port
+.SYNOPSIS
+  Sincroniza a porta encaminhada do Proton VPN com o qBittorrent no Windows.
+.DESCRIPTION
+  Lê a porta de port forwarding nos logs do Proton VPN, atualiza Session\Port
+  no qBittorrent.ini e reinicia o qBittorrent para aplicar a mudança.
+.PARAMETER ProtonVpnLogDir
+  Caminho dos logs do Proton VPN (padrao: %LOCALAPPDATA%\Proton\Proton VPN\Logs).
+.PARAMETER QbitConfigPath
+  Caminho do qBittorrent.ini (padrao: %APPDATA%\qBittorrent\qBittorrent.ini).
+.PARAMETER QbitExePath
+  Caminho do qbittorrent.exe (auto-detect se vazio).
+.PARAMETER LogPath
+  Caminho do arquivo de log (padrao: %ProgramData%\ProtonQbitPortSync\proton-qbit-port-sync.log).
+.PARAMETER LogTailLines
+  Quantidade de linhas finais lidas por log para achar a porta.
+.PARAMETER SkipRestartIfSame
+  Se informado, nao reinicia quando a porta ja estiver correta.
+.EXAMPLE
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1"
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -36,6 +51,7 @@ function Write-Log {
 
 function Get-FileEncoding {
     param([byte[]]$Bytes)
+    # Preserva o encoding do qBittorrent.ini ao escrever de volta.
     if ($Bytes.Length -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0x00 -and $Bytes[3] -eq 0x00) {
         return [System.Text.UTF32Encoding]::new($false, $true)
     }
@@ -56,6 +72,7 @@ function Get-FileEncoding {
 
 function Find-ProtonForwardedPort {
     param([string]$LogDir, [int]$TailLines)
+    # Procura a ultima ocorrencia de "Port pair <port>->" nos logs.
     if (-not (Test-Path $LogDir)) {
         throw "Proton VPN log dir not found: $LogDir"
     }
@@ -80,6 +97,7 @@ function Find-ProtonForwardedPort {
 
 function Update-QbitConfig {
     param([string]$ConfigPath, [int]$Port)
+    # Atualiza Session\Port mantendo encoding e quebra de linha do arquivo.
 
     if (-not (Test-Path $ConfigPath)) {
         throw "qBittorrent config not found: $ConfigPath"
@@ -128,6 +146,7 @@ function Update-QbitConfig {
 
 function Find-QbitExe {
     param([string]$OverridePath)
+    # Resolve o caminho do qbittorrent.exe por prioridade.
 
     if ($OverridePath) {
         if (Test-Path $OverridePath) { return $OverridePath }
@@ -166,6 +185,7 @@ function Find-QbitExe {
 
 function Restart-Qbit {
     param([string]$ExePath)
+    # Encerra e reinicia o qBittorrent para aplicar a nova porta.
 
     if ($PSCmdlet.ShouldProcess("qBittorrent", "Restart")) {
         $running = Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue
