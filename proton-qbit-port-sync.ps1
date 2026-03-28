@@ -85,7 +85,7 @@ function Find-ProtonForwardedPort {
     foreach ($log in $logs) {
         $tail = Get-Content -Path $log.FullName -Tail $TailLines -ErrorAction Stop
         $text = $tail -join "`n"
-        $portMatches = [regex]::Matches($text, "Port pair (\\d+)->")
+        $portMatches = [regex]::Matches($text, "Port pair (\d+)->")
         if ($portMatches.Count -gt 0) {
             $port = $portMatches[$portMatches.Count - 1].Groups[1].Value
             return [int]$port
@@ -111,7 +111,7 @@ function Update-QbitConfig {
     $newLine = "`n"
     if ($text -match "`r`n") { $newLine = "`r`n" }
 
-    $portPattern = '(?m)^Session\\Port=(\\d+).*$'
+    $portPattern = '(?m)^Session\\Port=(\d+).*$'
     $match = [regex]::Match($text, $portPattern)
 
     $currentPort = $null
@@ -129,10 +129,10 @@ function Update-QbitConfig {
 
     $updatedText = $text
     if ($match.Success) {
-        $updatedText = [regex]::Replace($text, $portPattern, "Session\\Port=$Port")
+        $updatedText = [regex]::Replace($text, $portPattern, "Session\Port=$Port")
     }
     else {
-        $updatedText = $text.TrimEnd() + $newLine + "Session\\Port=$Port" + $newLine
+        $updatedText = $text.TrimEnd() + $newLine + "Session\Port=$Port" + $newLine
     }
 
     if ($PSCmdlet.ShouldProcess($ConfigPath, "Update Session\\Port to $Port")) {
@@ -156,8 +156,8 @@ function Find-QbitExe {
     }
 
     $candidates = @(
-        "C:\\Program Files\\qBittorrent\\qbittorrent.exe",
-        "C:\\Program Files (x86)\\qBittorrent\\qbittorrent.exe"
+        "C:\Program Files\qBittorrent\qbittorrent.exe",
+        "C:\Program Files (x86)\qBittorrent\qbittorrent.exe"
     )
 
     foreach ($candidate in $candidates) {
@@ -168,8 +168,8 @@ function Find-QbitExe {
     if ($cmd) { return $cmd.Source }
 
     $uninstallKeys = @(
-        "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*",
-        "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*"
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
     foreach ($key in $uninstallKeys) {
         $apps = Get-ItemProperty $key -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "qBittorrent*" }
