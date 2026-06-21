@@ -2,22 +2,30 @@
 .SYNOPSIS
   Sincroniza a porta encaminhada do Proton VPN com o qBittorrent no Windows.
 .DESCRIPTION
-  Lê a porta de port forwarding nos logs do Proton VPN, atualiza Session\Port
-  no qBittorrent.ini e reinicia o qBittorrent para aplicar a mudança.
+  Le a porta mais recente nos logs do Proton VPN, atualiza Session\Port no
+  qBittorrent.ini com backup e reinicia o qBittorrent somente quando necessario.
 .PARAMETER ProtonVpnLogDir
-  Caminho dos logs do Proton VPN (padrao: %LOCALAPPDATA%\Proton\Proton VPN\Logs).
+  Diretorio dos logs do Proton VPN.
 .PARAMETER QbitConfigPath
-  Caminho do qBittorrent.ini (padrao: %APPDATA%\qBittorrent\qBittorrent.ini).
+  Caminho do qBittorrent.ini.
 .PARAMETER QbitExePath
-  Caminho do qbittorrent.exe (auto-detect se vazio).
+  Caminho do qbittorrent.exe. Se vazio, tenta detectar automaticamente.
 .PARAMETER LogPath
-  Caminho do arquivo de log (padrao: %ProgramData%\ProtonQbitPortSync\proton-qbit-port-sync.log).
+  Caminho do log desta automacao.
 .PARAMETER LogTailLines
-  Quantidade de linhas finais lidas por log para achar a porta.
+  Quantidade de linhas finais lidas de cada log do Proton VPN.
+.PARAMETER MaxPortAgeMinutes
+  Idade maxima da entrada de porta. Use 0 para desabilitar esta validacao.
+.PARAMETER NoRestart
+  Atualiza somente o arquivo INI, sem encerrar ou iniciar o qBittorrent.
+.PARAMETER StartIfNotRunning
+  Inicia o qBittorrent apos uma alteracao mesmo se ele nao estava em execucao.
+.PARAMETER ForceRestart
+  Reinicia o qBittorrent mesmo quando a porta ja esta correta.
 .PARAMETER SkipRestartIfSame
-  Se informado, nao reinicia quando a porta ja estiver correta.
+  Mantido para compatibilidade. Nao reiniciar quando a porta e igual agora e o padrao.
 .EXAMPLE
-  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "C:\Scripts\proton-qbit-port-sync\proton-qbit-port-sync.ps1"
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\proton-qbit-port-sync.ps1
 #>
 
 [CmdletBinding(SupportsShouldProcess = $true)]
@@ -25,228 +33,437 @@ param(
     [string]$ProtonVpnLogDir = (Join-Path $env:LOCALAPPDATA "Proton\Proton VPN\Logs"),
     [string]$QbitConfigPath = (Join-Path $env:APPDATA "qBittorrent\qBittorrent.ini"),
     [string]$QbitExePath = "",
-    [string]$LogPath = (Join-Path $env:ProgramData "ProtonQbitPortSync\proton-qbit-port-sync.log"),
-    [int]$LogTailLines = 2000,
+    [string]$LogPath = (Join-Path $env:LOCALAPPDATA "ProtonQbitPortSync\proton-qbit-port-sync.log"),
+    [ValidateRange(100, 1000000)]
+    [int]$LogTailLines = 5000,
+    [ValidateRange(0, 1440)]
+    [int]$MaxPortAgeMinutes = 10,
+    [ValidateRange(1, 100)]
+    [int]$MaxLogSizeMB = 5,
+    [switch]$NoRestart,
+    [switch]$StartIfNotRunning,
+    [switch]$ForceRestart,
     [switch]$SkipRestartIfSame
 )
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = "Stop"
 
-function New-LogPath {
-    param([string]$Path)
-    $dir = Split-Path -Path $Path -Parent
-    if (-not (Test-Path $dir)) {
-        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+function Initialize-LogPath {
+    param([string]$Path, [int]$MaxSizeMB)
+
+    $directory = Split-Path -Path $Path -Parent
+    if (-not $directory) {
+        throw "LogPath must include a directory: $Path"
+    }
+    if (-not (Test-Path -LiteralPath $directory)) {
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+    }
+
+    if (Test-Path -LiteralPath $Path) {
+        $maxBytes = $MaxSizeMB * 1MB
+        if ((Get-Item -LiteralPath $Path).Length -ge $maxBytes) {
+            $backupPath = "$Path.1"
+            Move-Item -LiteralPath $Path -Destination $backupPath -Force
+        }
     }
 }
 
 function Write-Log {
     param([string]$Message)
+
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
     $line = "[$timestamp] $Message"
-    Add-Content -Path $LogPath -Value $line -Encoding utf8
+    Add-Content -LiteralPath $LogPath -Value $line -Encoding UTF8
     Write-Output $line
 }
 
-function Get-FileEncoding {
-    param([byte[]]$Bytes)
-    # Preserva o encoding do qBittorrent.ini ao escrever de volta.
-    if ($Bytes.Length -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0x00 -and $Bytes[3] -eq 0x00) {
-        return [System.Text.UTF32Encoding]::new($false, $true)
+function Get-TextFileInfo {
+    param([string]$Path)
+
+    $bytes = [System.IO.File]::ReadAllBytes($Path)
+    $offset = 0
+
+    if (($bytes.Length -ge 4) -and ($bytes[0] -eq 0xFF) -and ($bytes[1] -eq 0xFE) -and ($bytes[2] -eq 0x00) -and ($bytes[3] -eq 0x00)) {
+        $encoding = New-Object System.Text.UTF32Encoding($false, $true, $true)
+        $offset = 4
     }
-    if ($Bytes.Length -ge 4 -and $Bytes[0] -eq 0x00 -and $Bytes[1] -eq 0x00 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) {
-        return [System.Text.UTF32Encoding]::new($true, $true)
+    elseif (($bytes.Length -ge 4) -and ($bytes[0] -eq 0x00) -and ($bytes[1] -eq 0x00) -and ($bytes[2] -eq 0xFE) -and ($bytes[3] -eq 0xFF)) {
+        $encoding = New-Object System.Text.UTF32Encoding($true, $true, $true)
+        $offset = 4
     }
-    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
-        return [System.Text.UTF8Encoding]::new($true)
+    elseif (($bytes.Length -ge 3) -and ($bytes[0] -eq 0xEF) -and ($bytes[1] -eq 0xBB) -and ($bytes[2] -eq 0xBF)) {
+        $encoding = New-Object System.Text.UTF8Encoding($true, $true)
+        $offset = 3
     }
-    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) {
-        return [System.Text.UnicodeEncoding]::new($false, $true)
+    elseif (($bytes.Length -ge 2) -and ($bytes[0] -eq 0xFF) -and ($bytes[1] -eq 0xFE)) {
+        $encoding = New-Object System.Text.UnicodeEncoding($false, $true, $true)
+        $offset = 2
     }
-    if ($Bytes.Length -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) {
-        return [System.Text.UnicodeEncoding]::new($true, $true)
+    elseif (($bytes.Length -ge 2) -and ($bytes[0] -eq 0xFE) -and ($bytes[1] -eq 0xFF)) {
+        $encoding = New-Object System.Text.UnicodeEncoding($true, $true, $true)
+        $offset = 2
     }
-    return [System.Text.Encoding]::Default
+    else {
+        $encoding = New-Object System.Text.UTF8Encoding($false, $true)
+        try {
+            $null = $encoding.GetString($bytes)
+        }
+        catch [System.Text.DecoderFallbackException] {
+            $encoding = [System.Text.Encoding]::Default
+        }
+    }
+
+    $text = $encoding.GetString($bytes, $offset, ($bytes.Length - $offset))
+    $newLine = [Environment]::NewLine
+    if ($text.Contains("`r`n")) {
+        $newLine = "`r`n"
+    }
+    elseif ($text.Contains("`n")) {
+        $newLine = "`n"
+    }
+
+    [pscustomobject]@{
+        Text     = $text
+        Encoding = $encoding
+        NewLine  = $newLine
+        HasBom   = ($offset -gt 0)
+    }
 }
 
 function Find-ProtonForwardedPort {
-    param([string]$LogDir, [int]$TailLines)
-    # Procura a ultima ocorrencia de "Port pair <port>->" nos logs.
-    if (-not (Test-Path $LogDir)) {
-        throw "Proton VPN log dir not found: $LogDir"
+    param([string]$LogDir, [int]$TailLines, [int]$MaxAgeMinutes)
+
+    if (-not (Test-Path -LiteralPath $LogDir -PathType Container)) {
+        throw "Proton VPN log directory not found: $LogDir"
     }
 
-    $logs = Get-ChildItem -Path $LogDir -Filter "*.txt" -File | Sort-Object LastWriteTime -Descending
+    $logs = Get-ChildItem -LiteralPath $LogDir -Filter "*.txt" -File |
+    Sort-Object LastWriteTimeUtc -Descending
     if (-not $logs) {
         throw "No Proton VPN log files found in: $LogDir"
     }
 
+    $portPattern = [regex]'(?i)\bPort\s+pair\s+(?<port>\d{1,5})\s*->'
+    $timestampPattern = [regex]'^(?<timestamp>\d{4}-\d{2}-\d{2}T\S+)'
+
     foreach ($log in $logs) {
-        $tail = Get-Content -Path $log.FullName -Tail $TailLines -ErrorAction Stop
-        $text = $tail -join "`n"
-        $portMatches = [regex]::Matches($text, "Port pair (\d+)->")
-        if ($portMatches.Count -gt 0) {
-            $port = $portMatches[$portMatches.Count - 1].Groups[1].Value
-            return [int]$port
+        $lines = @(Get-Content -LiteralPath $log.FullName -Tail $TailLines -ErrorAction Stop)
+        for ($index = $lines.Count - 1; $index -ge 0; $index--) {
+            $portMatch = $portPattern.Match([string]$lines[$index])
+            if (-not $portMatch.Success) {
+                continue
+            }
+
+            $port = [int]$portMatch.Groups['port'].Value
+            if (($port -lt 1) -or ($port -gt 65535)) {
+                continue
+            }
+
+            $observedAt = [DateTimeOffset]$log.LastWriteTime
+            $timestampMatch = $timestampPattern.Match([string]$lines[$index])
+            if ($timestampMatch.Success) {
+                $parsedTimestamp = [DateTimeOffset]::MinValue
+                if ([DateTimeOffset]::TryParse(
+                        $timestampMatch.Groups['timestamp'].Value,
+                        [Globalization.CultureInfo]::InvariantCulture,
+                        [Globalization.DateTimeStyles]::RoundtripKind,
+                        [ref]$parsedTimestamp
+                    )) {
+                    $observedAt = $parsedTimestamp
+                }
+            }
+
+            $age = [DateTimeOffset]::UtcNow - $observedAt.ToUniversalTime()
+            if (($MaxAgeMinutes -gt 0) -and ($age.TotalMinutes -gt $MaxAgeMinutes)) {
+                throw ("Latest Proton forwarded port is stale ({0:N1} minutes old): {1}" -f $age.TotalMinutes, $observedAt)
+            }
+            if ($age.TotalMinutes -lt -5) {
+                throw "Latest Proton forwarded port has a timestamp in the future: $observedAt"
+            }
+
+            return [pscustomobject]@{
+                Port       = $port
+                ObservedAt = $observedAt
+                Source     = $log.FullName
+            }
         }
     }
 
     throw "No 'Port pair <port>->' entry found in Proton VPN logs. Is Port Forwarding enabled and connected?"
 }
 
-function Update-QbitConfig {
-    [CmdletBinding(SupportsShouldProcess)]
-    param([string]$ConfigPath, [int]$Port)
-    # Atualiza Session\Port mantendo encoding e quebra de linha do arquivo.
+function Get-QbitConfigPort {
+    param([string]$ConfigPath)
 
-    if (-not (Test-Path $ConfigPath)) {
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
         throw "qBittorrent config not found: $ConfigPath"
     }
 
-    $bytes = [System.IO.File]::ReadAllBytes($ConfigPath)
-    $encoding = Get-FileEncoding -Bytes $bytes
-    $text = $encoding.GetString($bytes)
+    $fileInfo = Get-TextFileInfo -Path $ConfigPath
+    $match = [regex]::Match($fileInfo.Text, '(?m)^[ \t]*Session\\Port[ \t]*=[ \t]*(?<port>\d+)[ \t]*\r?$')
+    if (-not $match.Success) {
+        return $null
+    }
+    return [int]$match.Groups['port'].Value
+}
 
-    $newLine = "`n"
-    if ($text -match "`r`n") { $newLine = "`r`n" }
+function Update-QbitConfig {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([string]$ConfigPath, [int]$Port)
 
-    $portPattern = '(?m)^Session\\Port=(\d+).*$'
-    $match = [regex]::Match($text, $portPattern)
-
-    $currentPort = $null
-    if ($match.Success) {
-        $currentPort = $match.Groups[1].Value
+    if (-not (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        throw "qBittorrent config not found: $ConfigPath"
     }
 
-    if ($currentPort -eq "$Port") {
-        return [pscustomobject]@{
-            Changed = $false
-            OldPort = $currentPort
-            NewPort = $Port
+    $fileInfo = Get-TextFileInfo -Path $ConfigPath
+    $text = $fileInfo.Text
+    $newLine = $fileInfo.NewLine
+    $portPattern = '(?m)^[ \t]*Session\\Port[ \t]*=[^\r\n]*'
+    $match = [regex]::Match($text, $portPattern)
+    $oldPort = Get-QbitConfigPort -ConfigPath $ConfigPath
+
+    if (($oldPort -eq $Port) -and $match.Success) {
+        return [pscustomobject]@{ Changed = $false; OldPort = $oldPort; NewPort = $Port; BackupPath = $null }
+    }
+
+    $portLine = "Session\Port=$Port"
+    if ($match.Success) {
+        $updatedText = $text.Substring(0, $match.Index) + $portLine + $text.Substring($match.Index + $match.Length)
+    }
+    else {
+        $preferencesHeader = [regex]::Match($text, '(?mi)^\[Preferences\][ \t]*(?:\r?\n|$)')
+        if ($preferencesHeader.Success) {
+            $insertAt = $preferencesHeader.Index + $preferencesHeader.Length
+            $separator = ""
+            if (-not $preferencesHeader.Value.EndsWith("`n")) {
+                $separator = $newLine
+            }
+            $updatedText = $text.Insert($insertAt, $separator + $portLine + $newLine)
+        }
+        else {
+            $trimmedText = $text.TrimEnd("`r", "`n")
+            $updatedText = $trimmedText + $newLine + $newLine + "[Preferences]" + $newLine + $portLine + $newLine
         }
     }
 
-    $updatedText = $text
-    if ($match.Success) {
-        $updatedText = [regex]::Replace($text, $portPattern, "Session\Port=$Port")
-    }
-    else {
-        $updatedText = $text.TrimEnd() + $newLine + "Session\Port=$Port" + $newLine
+    $backupPath = "$ConfigPath.proton-qbit-port-sync.bak"
+    if ($PSCmdlet.ShouldProcess($ConfigPath, "Set Session\Port to $Port (backup: $backupPath)")) {
+        $tempPath = Join-Path (Split-Path -Path $ConfigPath -Parent) (".{0}.{1}.tmp" -f ([IO.Path]::GetFileName($ConfigPath)), [guid]::NewGuid().ToString('N'))
+        try {
+            [System.IO.File]::WriteAllText($tempPath, $updatedText, $fileInfo.Encoding)
+            try {
+                [System.IO.File]::Replace($tempPath, $ConfigPath, $backupPath, $true)
+            }
+            catch [System.PlatformNotSupportedException] {
+                Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
+                Move-Item -LiteralPath $tempPath -Destination $ConfigPath -Force
+            }
+            catch [System.IO.IOException] {
+                Copy-Item -LiteralPath $ConfigPath -Destination $backupPath -Force
+                Move-Item -LiteralPath $tempPath -Destination $ConfigPath -Force
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $tempPath) {
+                Remove-Item -LiteralPath $tempPath -Force
+            }
+        }
     }
 
-    if ($PSCmdlet.ShouldProcess($ConfigPath, "Update Session\\Port to $Port")) {
-        [System.IO.File]::WriteAllText($ConfigPath, $updatedText, $encoding)
-    }
-
-    return [pscustomobject]@{
-        Changed = $true
-        OldPort = $currentPort
-        NewPort = $Port
-    }
+    [pscustomobject]@{ Changed = $true; OldPort = $oldPort; NewPort = $Port; BackupPath = $backupPath }
 }
 
 function Find-QbitExe {
     param([string]$OverridePath)
-    # Resolve o caminho do qbittorrent.exe por prioridade.
 
     if ($OverridePath) {
-        if (Test-Path $OverridePath) { return $OverridePath }
-        throw "qBittorrent exe not found at: $OverridePath"
+        if (Test-Path -LiteralPath $OverridePath -PathType Leaf) {
+            return (Resolve-Path -LiteralPath $OverridePath).Path
+        }
+        throw "qBittorrent executable not found at: $OverridePath"
+    }
+
+    $running = Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($running -and $running.Path -and (Test-Path -LiteralPath $running.Path)) {
+        return $running.Path
     }
 
     $candidates = @(
         "C:\Program Files\qBittorrent\qbittorrent.exe",
         "C:\Program Files (x86)\qBittorrent\qbittorrent.exe"
     )
-
     foreach ($candidate in $candidates) {
-        if (Test-Path $candidate) { return $candidate }
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
+        }
     }
 
-    $cmd = Get-Command "qbittorrent.exe" -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    $command = Get-Command "qbittorrent.exe" -ErrorAction SilentlyContinue
+    if ($command) {
+        return $command.Source
+    }
 
-    $uninstallKeys = @(
-        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
-        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
-    )
-    foreach ($key in $uninstallKeys) {
-        $apps = Get-ItemProperty $key -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -like "qBittorrent*" }
-        foreach ($app in $apps) {
-            if ($app.DisplayIcon -and (Test-Path $app.DisplayIcon)) { return $app.DisplayIcon }
-            if ($app.InstallLocation) {
-                $exe = Join-Path $app.InstallLocation "qbittorrent.exe"
-                if (Test-Path $exe) { return $exe }
+    throw "qBittorrent executable not found. Provide -QbitExePath explicitly."
+}
+
+function Stop-Qbit {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([System.Diagnostics.Process[]]$Processes, [int]$GracefulTimeoutSeconds = 10)
+
+    if (-not $Processes) {
+        return
+    }
+    if (-not $PSCmdlet.ShouldProcess("qBittorrent", "Stop before updating its configuration")) {
+        return
+    }
+
+    $requestedGracefulClose = $false
+    foreach ($process in $Processes) {
+        try {
+            if ($process.CloseMainWindow()) {
+                $requestedGracefulClose = $true
             }
         }
+        catch {
+            Write-Log "Could not request graceful close for qBittorrent PID $($process.Id): $($_.Exception.Message)"
+        }
     }
 
-    throw "qBittorrent exe not found. Provide -QbitExePath explicitly."
+    if ($requestedGracefulClose) {
+        $deadline = (Get-Date).AddSeconds($GracefulTimeoutSeconds)
+        do {
+            Start-Sleep -Milliseconds 250
+            $remaining = @(Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue)
+        } while ($remaining.Count -gt 0 -and (Get-Date) -lt $deadline)
+    }
+
+    $remaining = @(Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue)
+    if ($remaining.Count -gt 0) {
+        Write-Log "Graceful close was unavailable; forcing qBittorrent to stop."
+        $remaining | Stop-Process -Force -ErrorAction Stop
+        $remaining | Wait-Process -Timeout 15 -ErrorAction Stop
+    }
+    Write-Log "qBittorrent stopped."
 }
 
-function Restart-Qbit {
+function Start-Qbit {
     [CmdletBinding(SupportsShouldProcess)]
     param([string]$ExePath)
-    # Encerra e reinicia o qBittorrent para aplicar a nova porta.
 
-    if ($PSCmdlet.ShouldProcess("qBittorrent", "Restart")) {
-        $running = Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue
-        if ($running) {
-            Write-Log "Stopping qBittorrent..."
-            $running | Stop-Process -Force
-            Start-Sleep -Seconds 2
+    if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) {
+        throw "qBittorrent executable not found at: $ExePath"
+    }
+    if ($PSCmdlet.ShouldProcess("qBittorrent", "Start $ExePath")) {
+        $process = Start-Process -FilePath $ExePath -PassThru
+        Start-Sleep -Seconds 2
+        if ($process.HasExited) {
+            throw "qBittorrent exited immediately with code $($process.ExitCode)."
+        }
+        Write-Log "qBittorrent started (PID $($process.Id))."
+    }
+}
+
+function Invoke-PortSync {
+    $mutex = $null
+    $hasMutex = $false
+    $qbitWasStopped = $false
+    $qbitShouldStart = $false
+    $qbitExe = $null
+
+    try {
+        $mutex = New-Object System.Threading.Mutex($false, "Local\ProtonQbitPortSync")
+        $hasMutex = $mutex.WaitOne(0, $false)
+        if (-not $hasMutex) {
+            Write-Output "Another Proton qBittorrent port sync is already running."
+            return
+        }
+
+        Initialize-LogPath -Path $LogPath -MaxSizeMB $MaxLogSizeMB
+        Write-Log "=== Start ==="
+        Write-Log "User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+        Write-Log "Proton log directory: $ProtonVpnLogDir"
+        Write-Log "qBittorrent config: $QbitConfigPath"
+
+        $portInfo = Find-ProtonForwardedPort -LogDir $ProtonVpnLogDir -TailLines $LogTailLines -MaxAgeMinutes $MaxPortAgeMinutes
+        Write-Log "Forwarded port found: $($portInfo.Port) (observed $($portInfo.ObservedAt.ToString('o')))"
+
+        $currentPort = Get-QbitConfigPort -ConfigPath $QbitConfigPath
+        if (($currentPort -eq $portInfo.Port) -and (-not $ForceRestart)) {
+            Write-Log "Port already set to $currentPort; no restart needed."
+            Write-Log "=== Done ==="
+            return
+        }
+
+        $runningProcesses = @(Get-Process -Name "qbittorrent" -ErrorAction SilentlyContinue)
+        $qbitShouldStart = ($runningProcesses.Count -gt 0) -or $StartIfNotRunning
+        if ((-not $NoRestart) -and $qbitShouldStart) {
+            $qbitExe = Find-QbitExe -OverridePath $QbitExePath
+        }
+
+        if ((-not $NoRestart) -and ($runningProcesses.Count -gt 0)) {
+            Write-Log "Stopping qBittorrent before changing its configuration..."
+            Stop-Qbit -Processes $runningProcesses
+            $qbitWasStopped = $true
+        }
+        elseif ($NoRestart -and ($runningProcesses.Count -gt 0)) {
+            Write-Log "WARNING: -NoRestart was used while qBittorrent is running; the new port may require a later restart."
+        }
+
+        if ($currentPort -ne $portInfo.Port) {
+            $result = Update-QbitConfig -ConfigPath $QbitConfigPath -Port $portInfo.Port
+            Write-Log "Port updated: $($result.OldPort) -> $($result.NewPort)"
+            if ($result.BackupPath) {
+                Write-Log "Config backup: $($result.BackupPath)"
+            }
         }
         else {
-            Write-Log "qBittorrent was not running."
+            Write-Log "Port is unchanged; restart was explicitly requested."
         }
 
-        if (-not (Test-Path $ExePath)) {
-            throw "qBittorrent exe not found at: $ExePath"
+        if ((-not $NoRestart) -and $qbitShouldStart) {
+            Start-Qbit -ExePath $qbitExe
+            $qbitWasStopped = $false
         }
-
-        Start-Process -FilePath $ExePath
-        Write-Log "qBittorrent started."
+        Write-Log "=== Done ==="
+    }
+    catch {
+        if (Test-Path -LiteralPath (Split-Path -Path $LogPath -Parent)) {
+            try {
+                Write-Log "ERROR: $($_.Exception.Message)"
+                Write-Log "=== Failed ==="
+            }
+            catch {
+                Write-Error $_.Exception.Message
+            }
+        }
+        else {
+            Write-Error $_.Exception.Message
+        }
+        $script:PortSyncExitCode = 1
+    }
+    finally {
+        if ($qbitWasStopped -and $qbitExe) {
+            try {
+                Write-Log "Recovering qBittorrent after a failed update..."
+                Start-Qbit -ExePath $qbitExe
+            }
+            catch {
+                try { Write-Log "ERROR: qBittorrent recovery failed: $($_.Exception.Message)" } catch {}
+                $script:PortSyncExitCode = 1
+            }
+        }
+        if ($hasMutex -and $mutex) {
+            $mutex.ReleaseMutex()
+        }
+        if ($mutex) {
+            $mutex.Dispose()
+        }
     }
 }
 
-New-LogPath -Path $LogPath
-Write-Log "=== Start ==="
-Write-Log "User: $([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-Write-Log "Proton log dir: $ProtonVpnLogDir"
-Write-Log "qBittorrent config: $QbitConfigPath"
-
-try {
-    Write-Log "Finding forwarded port in Proton VPN logs..."
-    $newPort = Find-ProtonForwardedPort -LogDir $ProtonVpnLogDir -TailLines $LogTailLines
-    if ($newPort -lt 1 -or $newPort -gt 65535) {
-        throw "Invalid port parsed from logs: $newPort"
-    }
-    Write-Log "Forwarded port found: $newPort"
-
-    Write-Log "Updating qBittorrent config..."
-    $result = Update-QbitConfig -ConfigPath $QbitConfigPath -Port $newPort
-    if ($result.Changed) {
-        Write-Log "Port updated: $($result.OldPort) -> $($result.NewPort)"
-    }
-    else {
-        Write-Log "Port already set to $($result.NewPort)"
-    }
-
-    if (-not $SkipRestartIfSame -or $result.Changed) {
-        $exe = Find-QbitExe -OverridePath $QbitExePath
-        Write-Log "Restarting qBittorrent..."
-        Restart-Qbit -ExePath $exe
-    }
-    else {
-        Write-Log "Skipping restart because port did not change."
-    }
-
-    Write-Log "=== Done ==="
-}
-catch {
-    Write-Log "ERROR: $($_.Exception.Message)"
-    Write-Log "StackTrace: $($_.Exception.StackTrace)"
-    Write-Log "=== Failed ==="
-    exit 1
+if ($MyInvocation.InvocationName -ne '.') {
+    $script:PortSyncExitCode = 0
+    Invoke-PortSync
+    exit $script:PortSyncExitCode
 }

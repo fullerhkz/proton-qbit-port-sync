@@ -18,4 +18,5 @@ if not exist "%PS1%" (
 )
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%PS1%" %*
-endlocal
+set "EXIT_CODE=%ERRORLEVEL%"
+endlocal & exit /b %EXIT_CODE%
